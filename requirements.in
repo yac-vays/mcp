@@ -1,0 +1,13 @@
+httptools # to optimize uvicorn
+httpx
+joserfc # JWE envelopes, id-token validation (like YAC)
+jsonschema # reports all schema errors at once
+mcp
+passlib # sha512-crypt for the password renderer (like YAC)
+pydantic
+pydantic_settings
+PyYAML # required by uvicorn --log-config app/uvicorn.yml
+pyrage # age encryption for the age_secret renderer
+ruamel.yaml # round-trip YAML (like YAC)
+uvicorn
+uvloop # to optimize uvicorn

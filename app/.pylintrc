@@ -1,0 +1,18 @@
+[MAIN]
+
+recursive=yes
+extension-pkg-allow-list=pyrage
+
+[MESSAGES CONTROL]
+
+disable=
+  missing-module-docstring,
+  missing-class-docstring,
+  missing-function-docstring,
+  logging-fstring-interpolation,
+  duplicate-code,
+  fixme,
+  too-few-public-methods,
+  too-many-arguments,
+  too-many-positional-arguments,
+  dangerous-default-value,

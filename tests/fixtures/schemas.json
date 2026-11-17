@@ -1,0 +1,164 @@
+{
+ "json_schema": {
+  "type": "object",
+  "properties": {
+   "owner": {
+    "type": "string",
+    "title": "Owner"
+   },
+   "secret": {
+    "type": "string"
+   },
+   "machine_id": {
+    "type": "string"
+   },
+   "net": {
+    "type": "object",
+    "properties": {
+     "token": {
+      "type": "string"
+     },
+     "os": {
+      "type": "string",
+      "enum": [
+       "linux",
+       "windows"
+      ],
+      "default": "linux"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "token",
+     "os"
+    ],
+    "default": {}
+   },
+   "users": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "pw": {
+       "type": "string"
+      }
+     },
+     "additionalProperties": false,
+     "required": [
+      "name",
+      "pw"
+     ]
+    },
+    "default": []
+   }
+  },
+  "additionalProperties": false,
+  "required": [
+   "owner",
+   "secret",
+   "machine_id",
+   "net",
+   "users"
+  ]
+ },
+ "ui_schema": {
+  "type": "Categorization",
+  "elements": [
+   {
+    "type": "Category",
+    "label": "General",
+    "elements": [
+     {
+      "type": "Control",
+      "scope": "#/properties/owner",
+      "options": {}
+     },
+     {
+      "type": "Control",
+      "scope": "#/properties/secret",
+      "options": {
+       "renderer": "age_secret",
+       "renderer_options": {
+        "age_public_key": "age1abc",
+        "length": 20
+       }
+      }
+     },
+     {
+      "type": "Control",
+      "scope": "#/properties/machine_id",
+      "options": {
+       "renderer": "random_string",
+       "renderer_options": {
+        "format": "hex",
+        "length": 16
+       }
+      }
+     }
+    ]
+   },
+   {
+    "type": "Category",
+    "label": "Network",
+    "elements": [
+     {
+      "type": "Control",
+      "scope": "#/properties/net",
+      "options": {
+       "detail": {
+        "type": "Group",
+        "label": "net",
+        "elements": [
+         {
+          "type": "Control",
+          "scope": "#/properties/token",
+          "options": {
+           "renderer": "random_string"
+          }
+         },
+         {
+          "type": "Control",
+          "scope": "#/properties/os",
+          "options": {
+           "initial": "windows"
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   },
+   {
+    "type": "Category",
+    "label": "Users",
+    "elements": [
+     {
+      "type": "Control",
+      "scope": "#/properties/users",
+      "options": {
+       "details": {
+        "elements": [
+         {
+          "type": "Control",
+          "scope": "#/properties/name"
+         },
+         {
+          "type": "Control",
+          "scope": "#/properties/pw",
+          "options": {
+           "renderer": "password"
+          }
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  ]
+ }
+}

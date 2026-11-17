@@ -1,0 +1,44 @@
+# YAC specs the fixtures schemas.json / types.json were generated from (YAC
+# /validate in create mode and GET /entity), used by the fake backend.
+version: 0
+repo: {connection: {}, plugin: git_direct}
+auth: {}
+request: {}
+context: {}
+sets: {}
+roles:
+  - "host:all:adm": "user.name == 'alice'"
+types:
+  - name: host
+    title: Hosts
+    description: The hosts
+    actions:
+      - {name: deploy, title: Deploy, plugin: exec, details: {command: ["true"]}, hooks: [arbitrary]}
+schema:
+  type: object
+  properties:
+    owner: {type: string, title: Owner, vays_category: General}
+    secret:
+      type: string
+      vays_category: General
+      vays_options: {renderer: age_secret, renderer_options: {age_public_key: age1abc, length: 20}}
+    machine_id:
+      type: string
+      vays_category: General
+      vays_options: {renderer: random_string, renderer_options: {format: hex, length: 16}}
+    net:
+      type: object
+      vays_category: Network
+      properties:
+        token:
+          type: string
+          vays_options: {renderer: random_string}
+        os: {type: string, enum: [linux, windows], default: linux, vays_options: {initial: windows}}
+    users:
+      type: array
+      vays_category: Users
+      items:
+        type: object
+        properties:
+          name: {type: string}
+          pw: {type: string, vays_options: {renderer: password}}

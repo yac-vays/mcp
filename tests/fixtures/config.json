@@ -1,0 +1,8 @@
+{
+  "title": "Test",
+  "yamlComment": "Managed via the test portal",
+  "backends": [
+    {"name": "hosts", "title": "Hosts Inventory", "url": "https://yac-hosts.test"},
+    {"name": "down", "title": "Unreachable", "url": "https://yac-down.test"}
+  ]
+}
