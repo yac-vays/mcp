@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fullname" . }}
+  labels:
+    app: {{ include "name" . }}
+    chart: {{ include "chart" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ include "name" . }}
+      component: api
+  template:
+    metadata:
+      labels:
+        app: {{ include "name" . }}
+        component: api
+      annotations:
+        # Roll the pods when the secret or the config change (both are read
+        # once at startup)
+        {{- if .Values.env }}
+        checksum/env: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.topologySpread.enabled }}
+      # spread the replicas over different nodes (see values: topologySpread)
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              app: {{ include "name" . }}
+              component: api
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
+      containers:
+        - name: {{ include "fullname" . }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: [ALL]
+          image: {{ .Values.image }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          {{- if .Values.args }}
+          args:
+          {{- range $arg := $.Values.args }}
+            - {{ $arg | quote }}
+          {{- end }}
+          {{- end }}
+          # Explicit env vars take precedence over envFrom, so none of these
+          # can be overridden through `env` / `extraEnvSecret`.
+          env:
+            - name: YAC_MCP_PUBLIC_URL
+              value: {{ include "publicUrl" . | quote }}
+            - name: YAC_MCP_CONFIG
+              value: /config/config.json
+            - name: YAC_MCP_FORMAT_PLUGIN
+              value: "json_lines"
+            - name: YAC_MCP_READ_ONLY
+              value: {{ .Values.readOnly | toString | quote }}
+            - name: YAC_MCP_OIDC_URL
+              value: {{ .Values.oidc.url | quote }}
+            - name: YAC_MCP_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: YAC_MCP_OIDC_SCOPE
+              value: {{ .Values.oidc.scope | quote }}
+            # The development token passthrough skips all authentication:
+            # never possible in a chart deployment.
+            - name: YAC_MCP_DEV_TOKEN_PASSTHROUGH
+              value: "false"
+          {{- if or .Values.env .Values.extraEnvSecret }}
+          envFrom:
+            {{- if .Values.env }}
+            - secretRef:
+                name: {{ include "fullname" . }}-env
+            {{- end }}
+            {{- if .Values.extraEnvSecret }}
+            - secretRef:
+                name: {{ .Values.extraEnvSecret }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # /health is the cheap endpoint (no IdP or YAC calls): the gateway
+          # is stateless and has no dependency a pod restart could fix.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 5
+            failureThreshold: 3
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 2
+            failureThreshold: 3
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            timeoutSeconds: 2
+            failureThreshold: 20
+            periodSeconds: 3
+          # A stopping pod is removed from the Service and gets SIGTERM at the
+          # same moment; pause so the ingress stops routing to it first.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ int .Values.preStop.seconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "fullname" . }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

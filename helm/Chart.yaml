@@ -1,0 +1,5 @@
+apiVersion: v2
+name: mcp
+type: application
+version: 2.0.0
+description: YAC MCP gateway - lets AI agents work with YAC backends (as the logged-in user)

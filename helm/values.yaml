@@ -1,0 +1,122 @@
+---
+
+replicaCount: 2
+
+image: "registry.inf.ethz.ch/public-isg/yac-vays/mcp:v0"
+imagePullPolicy: Always
+
+# Extra command-line args appended to the container ENTRYPOINT (uvicorn).
+args: ["--forwarded-allow-ips", "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"]
+
+# External base URL of the gateway (no path: it must be served at the root of
+# its host). It is the OAuth issuer, and `{publicUrl}/mcp` is the URL users
+# add to their MCP client. Derived from the first ingress host when empty
+# (http://localhost:8080 without an ingress, for port-forward testing).
+publicUrl: ""
+
+# Disables all write tools (create, edit, delete, run_action).
+readOnly: true
+
+# The OIDC provider (the same one VAYS and YAC use) and the gateway's
+# confidential client there. Register the redirect URI `{publicUrl}/callback`
+# and add the client ID to `auth.oidc.client_ids` of every YAC backend in
+# `config.backends` (the gateway forwards the user's id-tokens to them).
+# The client secret goes into `env` (YAC_MCP_OIDC_CLIENT_SECRET) or
+# `extraEnvSecret`.
+oidc:
+  url: "https://example.com/.well-known/openid-configuration"
+  clientId: "yac-mcp"
+  # Every scope must be allowed for the client, and the id-tokens must carry
+  # the claims the YAC specs use (`auth.oidc.jwt`).
+  scope: "openid profile email"
+
+# VAYS-compatible config (served as /config/config.json): the YAC backends the
+# gateway offers to agents and the comment written at the top of new
+# entities. Only `backends[].name`, `title`, `url` and `yamlComment` are used,
+# so the VAYS `config` can be copied as is (or reduced to the backends agents
+# should get).
+config:
+  yamlComment: "Automatically generated via MCP"
+  backends:
+    - name: "example"
+      title: "Example Inventory"
+      url: "https://yac.example.com"
+
+# Env vars written verbatim into a Secret (envFrom). Required:
+#   YAC_MCP_OIDC_CLIENT_SECRET: the confidential client's secret
+#   YAC_MCP_KEYS: JSON list of envelope keys, e.g. '["a1b2c3d4:<base64url>"]'.
+#     Generate one with `docker run --rm --entrypoint python <image> -m
+#     app.lib.envelope`. The first key encrypts, all keys decrypt: rotate by
+#     prepending a new key and dropping the old one after 30 days (the
+#     session lifetime). Replacing all keys logs everybody out.
+# See app/config.py for all YAC_MCP_* options, e.g.:
+#   YAC_MCP_LOG_LEVEL: debug
+#   YAC_MCP_REVEAL_GENERATED_SECRETS: true
+#   YAC_MCP_CLIENT_REGISTRATION: false
+#   TZ: Europe/Zurich
+env: {}
+
+# Name of an existing Kubernetes Secret to load additional env vars from
+# (via `envFrom: secretRef`), e.g. to manage the client secret and the
+# envelope keys out-of-band instead of through `env`.
+extraEnvSecret: ""
+
+# Additional volumes / mounts, e.g. for custom renderer plugins:
+#   extraVolumes:
+#     - name: plugins
+#       configMap:
+#         name: my-mcp-plugins
+#   extraVolumeMounts:
+#     - name: plugins
+#       subPath: my_renderer.py
+#       mountPath: /code/app/plugin/renderer/my_renderer.py
+#       readOnly: true
+# (or mount a directory and list it in YAC_MCP_PLUGIN_DIRS).
+extraVolumes: []
+extraVolumeMounts: []
+
+podAnnotations: {}
+secretAnnotations: {}
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  annotations: {}
+  className: ""
+  hosts:
+    - host: mcp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts: [mcp.example.com]
+      secretName: mcp-tls
+
+# Availability during node maintenance (NaaS docs, availability.md). The three
+# measures work together: spread the replicas over different nodes, pause
+# before SIGTERM so the ingress stops routing to a stopping pod first, and let
+# the platform evict only one pod at a time (maxUnavailable - never
+# minAvailable, which can block a node drain).
+topologySpread:
+  enabled: true
+  # ScheduleAnyway = soft preference; DoNotSchedule = require distinct nodes
+  whenUnsatisfiable: ScheduleAnyway
+preStop:
+  # Native sleep hook (no shell needed). The process must then exit on SIGTERM
+  # within terminationGracePeriodSeconds (default 30 s).
+  seconds: 5
+pdb:
+  # PodDisruptionBudget with maxUnavailable: 1 (only created for replicaCount > 1)
+  enabled: true
