@@ -48,6 +48,10 @@ class FakeYac:
         self.after_action_warning = ""
         # Limit usages, measured (like YAC) only for the operations a limit is on
         self.usages: list[dict] = []
+        # Simulated failures of the next write: an httpx exception or a status
+        # code (e.g. a proxy's 504), before or after the write was applied
+        self.fail_before_write: Exception | int | None = None
+        self.fail_after_write: Exception | int | None = None
         self.perms = list(PERMS)
 
     def _validated(self, data: dict, text: str) -> dict:
@@ -84,6 +88,25 @@ class FakeYac:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.method in ("POST", "PUT", "DELETE") and request.url.path != "/validate":
+            failure, self.fail_before_write = self.fail_before_write, None
+            if failure is not None:
+                return self._fail(failure, request)
+            response = self._handle(request)
+            failure, self.fail_after_write = self.fail_after_write, None
+            if failure is not None:
+                return self._fail(failure, request)
+            return response
+        return self._handle(request)
+
+    @staticmethod
+    def _fail(failure: Exception | int, request: httpx.Request) -> httpx.Response:
+        if isinstance(failure, int):
+            return httpx.Response(failure, text="Gateway Timeout")
+        failure.request = request
+        raise failure
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
         path, method = request.url.path, request.method
         if path == "/entity" and method == "GET":
             return httpx.Response(200, json=TYPES)

@@ -310,6 +310,31 @@ def _unchanged(stored: str, prepared: Prepared, yaml_text: str | None) -> bool:
 
 UNCHANGED_HINT = "The entity already has this content: there is nothing to commit."
 
+LOST_ANSWER = (
+    "The backend's answer got lost ({error}), the entity was read again: {what}"
+)
+
+
+async def _stored_now(client: Yac, type_name: str, name: str) -> str | None:
+    """The stored YAML (None if the entity does not exist)."""
+    try:
+        return await client.entity_yaml(type_name, name)
+    except UpstreamError as error:
+        if error.status == 404:
+            return None
+        raise
+
+
+def _has_data(text: str | None, expected: str) -> bool:
+    return text is not None and yamllib.same_data(yamllib.load(text), yamllib.load(expected))
+
+
+def _lost_answer_committed(client: Yac, error: UpstreamError, run: list[str]) -> None:
+    what = "the change is stored."
+    if run:
+        what += " Check with read_logs whether the actions ran (do not run them twice)."
+    client.warnings.append(LOST_ANSWER.format(error=error, what=what))
+
 
 def _not_committed(prepared: Prepared) -> dict:
     return {
@@ -335,7 +360,25 @@ async def create(
     prepared = await prepare(client, type_name, "create", name, yaml_text, None, secrets)
     if not prepared.valid:
         return _not_committed(prepared)
-    diff = await client.create(type_name, {"name": name, "yaml": prepared.yaml}, msg, run)
+    try:
+        diff = await client.create(type_name, {"name": name, "yaml": prepared.yaml}, msg, run)
+    except UpstreamError as error:
+        # The answer got lost: whether it was created decides what the agent
+        # may do next (a retry must not create it twice).
+        if not error.uncertain:
+            raise
+        if name is None:
+            raise InputError(
+                f"{error} - the entity may have been created under a generated name:"
+                " list the entities before you try again"
+            ) from error
+        current = await _stored_now(client, type_name, name)
+        if current is None:
+            raise InputError(f"{error} - it was not created, you can try again") from error
+        if not _has_data(current, prepared.yaml):
+            raise InputError(f"{error} - {name} exists with other data: read it") from error
+        _lost_answer_committed(client, error, run)
+        diff = {"name": name, "patch": ""}
     return {
         "committed": True,
         "name": diff.get("name", name),
@@ -379,7 +422,22 @@ async def edit(  # pylint: disable=too-many-locals
                 f"{error.message} - the entity was changed in the meantime: read it"
                 " again and redo the change"
             ) from error
-        raise
+        if not error.uncertain:
+            raise
+        current = await _stored_now(client, type_name, name)
+        # The text first: a comment-only change has the same data before and after
+        if current != prepared.yaml:
+            if current == stored:
+                raise InputError(
+                    f"{error} - the change was not stored, you can try again"
+                ) from error
+            if not _has_data(current, prepared.yaml) or _has_data(current, stored):
+                raise InputError(
+                    f"{error} - the entity was changed or deleted in the meantime: read it"
+                    " again"
+                ) from error
+        _lost_answer_committed(client, error, run)
+        diff = {"name": name, "patch": ""}
     return {
         "committed": True,
         "name": diff.get("name", name),
@@ -392,7 +450,14 @@ async def edit(  # pylint: disable=too-many-locals
 async def delete(client: Yac, type_name: str, name: str, message: str, run: list[str]) -> dict:
     check_writable()
     check_name(name)
-    await client.delete(type_name, name, commit_message(message), run)
+    try:
+        await client.delete(type_name, name, commit_message(message), run)
+    except UpstreamError as error:
+        if not error.uncertain:
+            raise
+        if await _stored_now(client, type_name, name) is not None:
+            raise InputError(f"{error} - it was not deleted, you can try again") from error
+        _lost_answer_committed(client, error, run)
     return {"deleted": name}
 
 
@@ -400,7 +465,14 @@ async def run_action(client: Yac, type_name: str, name: str, action: str) -> dic
     check_writable()
     check_name(name)
     check_name(action, "action")
-    await client.run_action(type_name, name, action)
+    try:
+        await client.run_action(type_name, name, action)
+    except UpstreamError as error:
+        if error.uncertain:
+            raise InputError(
+                f"{error} - the action may have run: check read_logs before you run it again"
+            ) from error
+        raise
     return {"started": action, "hint": "Use read_logs to follow its progress (if it logs)."}
 
 

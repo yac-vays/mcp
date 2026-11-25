@@ -7,6 +7,7 @@ Raises: [app.model.err.UpstreamError]
 """
 
 import logging
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -21,6 +22,9 @@ from app.version import VERSION
 logger = logging.getLogger(__name__)
 
 WARNING_HEADERS = ("warning", "yac-warning")
+
+# Answers of a proxy in front of YAC: the request may still have been processed
+UNCERTAIN_STATUSES = (502, 504)
 
 def _q(value: str) -> str:
     return quote(value, safe="")
@@ -48,20 +52,22 @@ class Yac:
         self.token = token
         self.warnings: list[str] = []
 
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _request(
+        self, method: str, path: str, write: bool = False, **kwargs
+    ) -> httpx.Response:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "User-Agent": f"yac-mcp/{VERSION}",
             **consts.CLIENT_HEADERS,
         }
+        timeout = consts.ENV.write_timeout if write else consts.ENV.upstream_timeout
+        started = time.monotonic()
         try:
             response = await http.client().request(
-                method, f"{self.backend.url}{path}", headers=headers, **kwargs
+                method, f"{self.backend.url}{path}", headers=headers, timeout=timeout, **kwargs
             )
         except httpx.HTTPError as error:
-            raise UpstreamError(
-                502, "Backend unreachable", f"{self.backend.name}: {error}"
-            ) from error
+            raise self._transport_error(method, path, write, error, started) from error
         # `Warning`: stale data (the repo is unreachable); `YAC-Warning`: an
         # action that failed after a committed write.
         for header in WARNING_HEADERS:
@@ -71,8 +77,33 @@ class Yac:
             title, message = _error_message(response)
             if response.status_code == 401:
                 message = f"The backend did not accept the login: {message}"
-            raise UpstreamError(response.status_code, title, message)
+            uncertain = write and response.status_code in UNCERTAIN_STATUSES
+            if uncertain:
+                logger.warning(
+                    f"{method} {self.backend.name}{path}: {response.status_code} after"
+                    f" {time.monotonic() - started:.1f} s"
+                )
+            raise UpstreamError(response.status_code, title, message, uncertain=uncertain)
         return response
+
+    def _transport_error(
+        self, method: str, path: str, write: bool, error: httpx.HTTPError, started: float
+    ) -> UpstreamError:
+        elapsed = time.monotonic() - started
+        detail = f"{type(error).__name__}{f': {error}' if str(error) else ''}"
+        logger.warning(f"{method} {self.backend.name}{path}: {detail} after {elapsed:.1f} s")
+        # Not sent at all: nothing can have happened
+        if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+            return UpstreamError(502, "Backend unreachable", f"{self.backend.name}: {detail}")
+        if isinstance(error, httpx.TimeoutException):
+            return UpstreamError(
+                504, "Backend timeout",
+                f"{self.backend.name} did not answer within {elapsed:.0f} s",
+                uncertain=write,
+            )
+        return UpstreamError(
+            502, "Backend connection lost", f"{self.backend.name}: {detail}", uncertain=write
+        )
 
     async def _json(self, method: str, path: str, **kwargs) -> Any:
         response = await self._request(method, path, **kwargs)
@@ -101,19 +132,21 @@ class Yac:
 
     async def create(self, type_name: str, body: dict, msg: str, run: list[str]) -> dict:
         params = {"msg": msg, "run": run}
-        return await self._json("POST", f"/entity/{_q(type_name)}", json=body, params=params)
+        path = f"/entity/{_q(type_name)}"
+        return await self._json("POST", path, write=True, json=body, params=params)
 
     async def replace(
         self, type_name: str, name: str, body: dict, msg: str, run: list[str]
     ) -> dict:
         params = {"msg": msg, "run": run}
         path = f"/entity/{_q(type_name)}/{_q(name)}"
-        return await self._json("PUT", path, json=body, params=params)
+        return await self._json("PUT", path, write=True, json=body, params=params)
 
     async def delete(self, type_name: str, name: str, msg: str, run: list[str]) -> None:
         params = {"msg": msg, "run": run}
-        await self._request("DELETE", f"/entity/{_q(type_name)}/{_q(name)}", params=params)
+        path = f"/entity/{_q(type_name)}/{_q(name)}"
+        await self._request("DELETE", path, write=True, params=params)
 
     async def run_action(self, type_name: str, name: str, action: str) -> None:
         path = f"/entity/{_q(type_name)}/{_q(name)}/run/{_q(action)}"
-        await self._request("POST", path)
+        await self._request("POST", path, write=True)

@@ -2,6 +2,8 @@
 
 import json
 
+import httpx
+
 import pyrage
 import pytest
 import respx
@@ -230,3 +232,60 @@ async def test_read_entity_validates_as_edit(fake, client):
     result = await entity.read_entity(client, "host", "web01")
     assert result["usages"] == [] and result["perms"] == ["see"]
     assert json.loads(fake.requests[-1].content)["operation"] == "read"
+
+
+LOST = [httpx.ReadTimeout(""), httpx.RemoteProtocolError("Server disconnected"), 504]
+
+
+@pytest.mark.parametrize("failure", LOST)
+async def test_edit_with_lost_answer_is_checked(fake, client, failure):
+    """A write whose answer got lost: the stored entity decides the result."""
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    fake.fail_after_write = failure
+    result = await entity.edit(client, "host", "web01", None, {"owner": "erin"}, token, None, "", [])
+    assert result["committed"] and "owner: erin" in fake.files["web01"]
+    assert any("the change is stored" in w for w in client.warnings)
+
+
+@pytest.mark.parametrize("failure", LOST)
+async def test_edit_not_stored_can_be_retried(fake, client, failure):
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    fake.fail_before_write = failure
+    with pytest.raises(InputError, match="not stored, you can try again"):
+        await entity.edit(client, "host", "web01", None, {"owner": "erin"}, token, None, "", [])
+    result = await entity.edit(client, "host", "web01", None, {"owner": "erin"}, token, None, "", [])
+    assert result["committed"] and len(fake.commits) == 1
+
+
+async def test_comment_only_edit_with_lost_answer(fake, client):
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    fake.fail_after_write = httpx.ReadTimeout("")
+    changed = STORED.replace("hand written", "by hand")
+    result = await entity.edit(client, "host", "web01", changed, None, token, None, "", [])
+    assert result["committed"] and "# by hand" in fake.files["web01"]
+
+
+async def test_create_and_delete_with_lost_answer(fake, client):
+    yaml_text = "owner: carol\nusers: []\n"
+    fake.fail_after_write = 504
+    result = await entity.create(client, "host", "web03", yaml_text, None, "", [])
+    assert result["committed"] and "web03" in fake.files
+    fake.fail_before_write = httpx.ReadTimeout("")
+    with pytest.raises(InputError, match="not created, you can try again"):
+        await entity.create(client, "host", "web04", yaml_text, None, "", [])
+    fake.fail_after_write = httpx.ReadTimeout("")
+    assert await entity.delete(client, "host", "web03", "", []) == {"deleted": "web03"}
+    fake.fail_before_write = 504
+    with pytest.raises(InputError, match="not deleted"):
+        await entity.delete(client, "host", "web01", "", [])
+
+
+async def test_unreachable_backend_is_not_uncertain(fake, client):
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    fake.fail_before_write = httpx.ConnectError("refused")
+    with pytest.raises(UpstreamError, match="unreachable") as raised:
+        await entity.edit(client, "host", "web01", None, {"owner": "erin"}, token, None, "", [])
+    assert not raised.value.uncertain
+    fake.fail_after_write = httpx.ReadTimeout("")
+    with pytest.raises(InputError, match="may have run"):
+        await entity.run_action(client, "host", "web01", "deploy")

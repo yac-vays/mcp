@@ -59,6 +59,11 @@ class Settings(BaseSettings):
 
     upstream_timeout: float = 30.0
 
+    # Timeout (seconds) of writes and actions: YAC commits, pushes and runs
+    # the requested actions before it answers. A write that times out is
+    # checked against the stored entity (see app.lib.entity).
+    write_timeout: float = 300.0
+
     # Maximum size (characters) of a YAML document the gateway parses, like
     # YAC's `YAC_MAX_YAML_SIZE` (same default): the round-trip parser is slow
     # and runs on the event loop.
