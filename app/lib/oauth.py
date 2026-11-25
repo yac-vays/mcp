@@ -138,7 +138,7 @@ async def _client_from_metadata_document(url: str) -> GatewayClient | None:
         document.pop("client_secret", None)
         client = GatewayClient.model_validate({**document, "token_endpoint_auth_method": "none"})
     except (httpx.HTTPError, ValueError, ValidationError) as error:
-        logger.info(f"Rejected client metadata document {url}: {error}")
+        logger.warning(f"Rejected client metadata document {url}: {error}")
         return None
     _cimd_cache[url] = (time.time() + CIMD_CACHE_TTL, client)
     return client
