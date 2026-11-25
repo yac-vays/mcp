@@ -20,6 +20,8 @@ from app.version import VERSION
 
 logger = logging.getLogger(__name__)
 
+WARNING_HEADERS = ("warning", "yac-warning")
+
 def _q(value: str) -> str:
     return quote(value, safe="")
 
@@ -60,8 +62,11 @@ class Yac:
             raise UpstreamError(
                 502, "Backend unreachable", f"{self.backend.name}: {error}"
             ) from error
-        if "warning" in response.headers:
-            self.warnings.append(response.headers["warning"])
+        # `Warning`: stale data (the repo is unreachable); `YAC-Warning`: an
+        # action that failed after a committed write.
+        for header in WARNING_HEADERS:
+            if header in response.headers:
+                self.warnings.append(response.headers[header])
         if response.status_code >= 400:
             title, message = _error_message(response)
             if response.status_code == 401:
@@ -86,6 +91,10 @@ class Yac:
 
     async def logs(self, type_name: str, name: str) -> list[dict]:
         return await self._json("GET", f"/entity/{_q(type_name)}/{_q(name)}/logs")
+
+    async def log_content(self, type_name: str, name: str, log: str) -> dict:
+        path = f"/entity/{_q(type_name)}/{_q(name)}/logs/{_q(log)}/content"
+        return await self._json("GET", path)
 
     async def validate(self, body: dict) -> dict:
         return await self._json("POST", "/validate", json=body)

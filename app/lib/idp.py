@@ -22,6 +22,16 @@ from app.model.err import IdPError
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL = 3600
+
+# Signature algorithms an id-token may use (the same list as YAC's).
+ID_TOKEN_ALGORITHMS = frozenset(
+    {
+        "RS256", "RS384", "RS512",
+        "PS256", "PS384", "PS512",
+        "ES256", "ES384", "ES512",
+        "EdDSA",
+    }
+)  # fmt: skip
 _cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -113,8 +123,13 @@ async def refresh(refresh_token: str) -> dict:
 
 async def validate_id_token(id_token: str, nonce: str | None = None) -> dict:
     meta = await metadata()
-    algorithms = meta.get("id_token_signing_alg_values_supported") or ["RS256"]
-    algorithms = [a for a in algorithms if a != "none"]
+    # Asymmetric algorithms only, whatever the provider advertises (like
+    # YAC): `none` would make unsigned tokens valid, a symmetric one has no
+    # key the gateway could know.
+    advertised = meta.get("id_token_signing_alg_values_supported") or ["RS256"]
+    algorithms = [a for a in advertised if a in ID_TOKEN_ALGORITHMS]
+    if not algorithms:
+        raise IdPError("The provider advertises no accepted id-token signature algorithm")
     try:
         try:
             token = jwt.decode(id_token, await _jwks(), algorithms=algorithms)

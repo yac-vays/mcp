@@ -11,6 +11,7 @@ Raises: [app.model.err.InputError, app.model.err.ReadOnlyError,
          app.model.err.UpstreamError, app.model.err.EnvelopeError]
 """
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 from app import consts
 from app.lib import backends
 from app.lib import envelope
+from app.lib import locs
 from app.lib import renderers
 from app.lib import schema
 from app.lib import yaml as yamllib
@@ -74,7 +76,10 @@ def _trim_type(typ: dict) -> dict:
             for a in typ["actions"]
         ]
     if typ.get("logs"):
-        trimmed["logs"] = [{"name": lg["name"], "title": lg["title"]} for lg in typ["logs"]]
+        trimmed["logs"] = [
+            {k: lg[k] for k in ("name", "title", "description", "renderer") if lg.get(k)}
+            for lg in typ["logs"]
+        ]
     return trimmed
 
 
@@ -132,18 +137,30 @@ def _seed_yaml(doc: Any) -> str:
     return f"---\n{lines if comment.strip() else ''}{body}"
 
 
+def _fill_defaults(doc: Any, json_schema: Any, filled: dict[str, Any]) -> bool:
+    """
+    Fill in the missing defaults and let the ones filled in earlier (in
+    `filled`, loc -> value) follow the defaults of a newer schema, like VAYS.
+    Returns whether the document changed.
+    """
+    changed = schema.refresh_defaults(doc, json_schema, filled)
+    added = schema.apply_defaults(doc, json_schema)
+    for loc in added:
+        filled[loc] = copy.deepcopy(yamllib.plain(locs.get(doc, locs.parse(loc))))
+    return bool(changed or added)
+
+
 async def new_entity(client: Yac, type_name: str) -> dict:
     typ = _trim_type(await find_type(client, type_name))
     doc = yamllib.load("")
-    defaults: list[str] = []
+    filled: dict[str, Any] = {}
     for _ in range(MAX_ROUNDS):
         body = {"operation": "create", "type": type_name, "name": None,
                 "entity": {"name": None, "yaml": yamllib.dump(doc)}}
         result = await client.validate(body)
-        filled = schema.apply_defaults(doc, result["schemas"]["json_schema"])
-        defaults.extend(filled)
-        if not filled:
+        if not _fill_defaults(doc, result["schemas"]["json_schema"], filled):
             break
+    defaults = list(filled)
     name_info = {k: typ[k] for k in ("name_pattern", "name_example", "name_generated") if k in typ}
     return {
         "yaml": _seed_yaml(doc),
@@ -190,17 +207,16 @@ async def prepare(  # pylint: disable=too-many-locals
     doc = yamllib.load(yaml_text)
     stored = yamllib.plain(yamllib.load(stored_yaml)) if stored_yaml is not None else None
     state = renderers.State(operation=operation, stored=stored, secrets=dict(secrets or {}))
-    defaults: list[str] = []
+    filled: dict[str, Any] = {}
     for round_ in range(1, MAX_ROUNDS + 1):
         body = _validate_body(type_name, operation, name, yamllib.dump(doc), stored_yaml)
         result = await client.validate(body)
         if round_ == MAX_ROUNDS:
             break
         schemas = result["schemas"]
-        filled = schema.apply_defaults(doc, schemas["json_schema"])
-        defaults.extend(filled)
+        defaults_changed = _fill_defaults(doc, schemas["json_schema"], filled)
         changed = await renderers.apply(state, doc, schemas["ui_schema"], schemas["json_schema"])
-        if not filled and not changed:
+        if not defaults_changed and not changed:
             break
     renderers.finish(state, doc)
     errors = _errors(result, state)
@@ -209,7 +225,7 @@ async def prepare(  # pylint: disable=too-many-locals
         valid=not errors,
         errors=errors,
         reports=state.reports,
-        defaults=defaults,
+        defaults=list(filled),
         usages=result.get("usages", []),
     )
 
@@ -254,14 +270,36 @@ async def validate(
             yaml_text = await _merged_yaml(client, type_name, name, stored, data)
     if yaml_text is None:
         raise InputError("Pass the entity as `yaml` (or as `data` patch for an edit)")
+    agent_yaml = yaml_text if data is None else None
     prepared = await prepare(client, type_name, operation, name, yaml_text, stored, secrets)
+    unchanged = {}
+    if stored is not None and prepared.valid and _unchanged(stored, prepared, agent_yaml):
+        unchanged = {"unchanged": True, "hint": UNCHANGED_HINT}
     return {
+        **unchanged,
         "valid": prepared.valid,
         "errors": prepared.errors,
         "would_generate": _dry_run_reports(prepared.reports),
         "defaults_applied": prepared.defaults,
         "usages": prepared.usages,
     }
+
+
+def _unchanged(stored: str, prepared: Prepared, yaml_text: str | None) -> bool:
+    """
+    Whether an edit would change nothing, so there is nothing to commit (YAC
+    refuses such a write). Re-sent stored values are no change (like a YAC
+    patch), and neither is the stored document sent back as it is, even if
+    YAC would format it differently.
+    """
+    if prepared.yaml == stored:
+        return True
+    if not yamllib.same_data(yamllib.load(prepared.yaml), yamllib.load(stored)):
+        return False
+    return yaml_text is None or yaml_text.strip() == stored.strip()
+
+
+UNCHANGED_HINT = "The entity already has this content: there is nothing to commit."
 
 
 def _not_committed(prepared: Prepared) -> dict:
@@ -315,11 +353,14 @@ async def edit(  # pylint: disable=too-many-locals
         raise InputError("Pass either `yaml` (the whole document) or `data` (a patch)")
     msg = commit_message(message)
     stored = await _stored_yaml(client, type_name, name, token)
+    agent_yaml = yaml_text
     if data is not None:
         yaml_text = await _merged_yaml(client, type_name, name, stored, data)
     prepared = await prepare(client, type_name, "edit", name, yaml_text or "", stored, secrets)
     if not prepared.valid:
         return _not_committed(prepared)
+    if _unchanged(stored, prepared, agent_yaml):
+        return {"committed": False, "unchanged": True, "hint": UNCHANGED_HINT}
     body = {"name": name, "yaml_old": stored, "yaml_new": prepared.yaml}
     try:
         diff = await client.replace(type_name, name, body, msg, run)
@@ -354,5 +395,14 @@ async def run_action(client: Yac, type_name: str, name: str, action: str) -> dic
     return {"started": action, "hint": "Use read_logs to follow its progress (if it logs)."}
 
 
-async def read_logs(client: Yac, type_name: str, name: str) -> dict:
-    return {"logs": await client.logs(type_name, name)}
+async def read_logs(client: Yac, type_name: str, name: str, log: str | None) -> dict:
+    if log is None:
+        return {"logs": await client.logs(type_name, name)}
+    check_name(log, "log")
+    result = await client.log_content(type_name, name, log)
+    content = str(result.get("content") or "")
+    limit = consts.ENV.max_log_content
+    answer = {"log": log, "time": result.get("time", ""), "content": content[:limit]}
+    if len(content) > limit:
+        answer["truncated"] = f"Only the first {limit} of {len(content)} characters"
+    return answer

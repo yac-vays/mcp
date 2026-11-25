@@ -121,7 +121,9 @@ async def test_edit_conflict(fake, client):
     token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
     fake.files["web01"] = STORED.replace("alice", "zoe")
     with pytest.raises(InputError, match="changed in the meantime"):
-        await entity.edit(client, "host", "web01", STORED, None, token, None, "", [])
+        await entity.edit(
+            client, "host", "web01", STORED.replace("alice", "erin"), None, token, None, "", []
+        )
 
 
 async def test_edit_token_for_other_entity(fake, client):
@@ -148,3 +150,69 @@ async def test_upstream_errors(fake, client):
         await entity.read_entity(client, "host", "nope")
     with pytest.raises(UpstreamError, match="unreachable"):
         await entity.list_types(Yac(backends.get("down"), "t"))
+
+
+async def test_edit_without_changes_commits_nothing(fake, client):
+    """YAC refuses a write that changes nothing: the gateway does not send it."""
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    result = await entity.edit(client, "host", "web01", STORED, None, token, None, "", [])
+    assert result == {"committed": False, "unchanged": True, "hint": entity.UNCHANGED_HINT}
+    # A patch re-sending stored values is no change either (like a YAC patch).
+    result = await entity.edit(
+        client, "host", "web01", None, {"owner": "alice"}, token, None, "", []
+    )
+    assert result["unchanged"] and not fake.commits
+    result = await entity.validate(client, "host", "edit", "web01", STORED, None, token, None)
+    assert result["valid"] and result["unchanged"]
+    # A comment-only change is a change (YAC requires `cln` for it).
+    result = await entity.edit(
+        client, "host", "web01", STORED.replace("hand written", "by hand"), None, token, None,
+        "", [],
+    )
+    assert result["committed"], result
+
+
+async def test_after_action_warning_is_reported(fake, client):
+    fake.after_action_warning = "The action deploy failed after the commit"
+    token = (await entity.read_entity(client, "host", "web01"))["edit_token"]
+    await entity.edit(client, "host", "web01", None, {"owner": "erin"}, token, None, "", ["deploy"])
+    assert "The action deploy failed after the commit" in client.warnings
+
+
+async def test_logs_and_content(fake, client, env):
+    (typ,) = await entity.list_types(client)
+    assert typ["logs"] == [
+        {"name": "facts", "title": "Facts", "description": "Gathered facts", "renderer": "document"}
+    ]
+    logs = await entity.read_logs(client, "host", "web01", None)
+    assert logs["logs"][0]["has_content"]
+    content = await entity.read_logs(client, "host", "web01", "facts")
+    assert content == {"log": "facts", "time": "2026-11-25", "content": fake.log_content}
+    env(max_log_content=5)
+    content = await entity.read_logs(client, "host", "web01", "facts")
+    assert content["content"] == fake.log_content[:5] and "truncated" in content
+    with pytest.raises(InputError, match="log"):
+        await entity.read_logs(client, "host", "web01", "../x")
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("%YAML 1.1\n---\na: yes\n", "directives"),
+        ("a: &a [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]\n"
+         + "".join(f"{c}: &{c} [{', '.join([f'*{p}'] * 10)}]\n"
+                   for p, c in zip("abcde", "bcdef")), "aliases are expanded"),
+        ("a: " + "[" * 5000 + "]" * 5000 + "\n", "nested too deeply"),
+        ("a: 0x_\n", "not valid"),
+    ],
+)
+async def test_yaml_is_bounded_like_in_yac(fake, client, text, message):
+    with pytest.raises(InputError, match=message):
+        await entity.validate(client, "host", "create", "web09", text, None, None, None)
+    assert not any(r.url.path == "/validate" for r in fake.requests)
+
+
+async def test_yaml_size_limit(fake, client, env):
+    env(max_yaml_size=100)
+    with pytest.raises(InputError, match="too big"):
+        await entity.validate(client, "host", "create", "web09", "a: " + "x" * 200, None, None, None)

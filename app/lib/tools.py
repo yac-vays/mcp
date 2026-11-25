@@ -244,9 +244,25 @@ def register(mcp: MCPServer) -> None:  # pylint: disable=too-many-locals
         return await _call(ctx, backend, entity.run_action, type, name, action)
 
     @mcp.tool(annotations=READ)
-    async def read_logs(ctx: Context, backend: Backend, type: Type, name: Name) -> dict[str, Any]:  # pylint: disable=redefined-builtin
-        """Read the logs of an entity (e.g. the progress of actions)."""
-        return await _call(ctx, backend, entity.read_logs, type, name)
+    async def read_logs(  # pylint: disable=redefined-builtin
+        ctx: Context,
+        backend: Backend,
+        type: Type,
+        name: Name,
+        log: Annotated[
+            str | None,
+            Field(
+                description="Name of a log whose entries have `has_content`: returns its"
+                " content document (e.g. a YAML file or a Markdown how-to) instead of"
+                " the entries"
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """
+        Read the logs of an entity (e.g. the progress of actions, problems, status
+        documents), or the content document of one log.
+        """
+        return await _call(ctx, backend, entity.read_logs, type, name, log)
 
     if consts.ENV.read_only:
         for tool in ("create", "edit", "delete", "run_action"):

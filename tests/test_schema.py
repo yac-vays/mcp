@@ -54,3 +54,24 @@ def test_locs():
     assert locs.expand(data, ["missing", ITEMS, "p"]) == []
     assert locs.expand(data, ["o", "x"]) == [["o", "x"]]
     assert locs.get(data, ["u", "1", "p"]) == 2
+
+
+def test_refresh_defaults_like_vays():
+    """Values the gateway filled in follow changed defaults, others stay."""
+    data = {"os": "ubuntu", "version": "24.04", "owner": "me", "net": {"vlan": 1}}
+    filled = {"#/version": "24.04", "#/owner": "you", "#/net": {"vlan": 1}, "#/gone": 1}
+    json_schema = {"properties": {
+        "version": {"default": "26.04"},  # changed default: follows
+        "owner": {"default": "them"},  # changed since filled in: stays
+        "net": {"properties": {"vlan": {"type": "integer"}}},  # default removed: removed
+    }}
+    changed = schema.refresh_defaults(data, json_schema, filled)
+    assert sorted(changed) == ["#/net", "#/version"]
+    assert data == {"os": "ubuntu", "version": "26.04", "owner": "me"}
+    assert filled == {"#/version": "26.04"}
+
+
+def test_node_numeric_property_names():
+    json_schema = {"properties": {"ports": {"properties": {"0": {"default": 1}}}}}
+    assert schema.node(json_schema, ["ports", "0"]) == {"default": 1}
+    assert schema.node({"items": {"type": "string"}}, ["0"]) == {"type": "string"}

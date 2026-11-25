@@ -17,6 +17,7 @@ from typing import Any
 import jsonschema
 
 from app.lib import locs
+from app.lib import yaml as yamllib
 from app.lib.locs import ITEMS
 
 
@@ -64,10 +65,11 @@ def node(json_schema: Any, pattern: tuple | list) -> dict:
     for token in pattern:
         if not isinstance(current, dict):
             return {}
-        if token == ITEMS or token.isdigit():
+        properties = current.get("properties") or {}
+        if token == ITEMS or (token.isdigit() and token not in properties):
             current = current.get("items")
         else:
-            current = (current.get("properties") or {}).get(token)
+            current = properties.get(token)
     return current if isinstance(current, dict) else {}
 
 
@@ -94,6 +96,44 @@ def apply_defaults(data: Any, json_schema: Any, prefix: tuple = ()) -> list[str]
         for index, item in enumerate(data):
             filled.extend(apply_defaults(item, json_schema["items"], (*prefix, str(index))))
     return filled
+
+
+def refresh_defaults(data: Any, json_schema: Any, filled: dict[str, Any]) -> list[str]:
+    """
+    Bring the values the gateway filled in itself (`filled`: loc -> value as
+    filled in) to the defaults of a newer schema, like VAYS: a value still
+    equal to what was filled in follows a changed default and is removed with
+    a default that is gone. Values changed since are left alone (and dropped
+    from `filled`). Returns the locations that were changed or removed.
+    """
+    changed: list[str] = []
+    for loc in sorted(filled, key=len):
+        if loc not in filled:
+            continue
+        tokens = locs.parse(loc)
+        parent = locs.get(data, tokens[:-1])
+        if not isinstance(parent, dict) or tokens[-1] not in parent:
+            del filled[loc]
+            continue
+        if not yamllib.same_data(parent[tokens[-1]], filled[loc]):
+            del filled[loc]
+            continue
+        sub = node(json_schema, tokens)
+        if "default" not in sub:
+            del parent[tokens[-1]]
+        elif not yamllib.same_data(sub["default"], filled[loc]):
+            _set_plain_or_rt(parent, tokens[-1], copy.deepcopy(sub["default"]))
+        else:
+            continue
+        changed.append(loc)
+        # Whatever was filled in below the old value went with it.
+        for nested in [n for n in filled if n.startswith(f"{loc}/")]:
+            del filled[nested]
+        if "default" in sub:
+            filled[loc] = copy.deepcopy(sub["default"])
+        else:
+            del filled[loc]
+    return changed
 
 
 def _set_plain_or_rt(data: dict, key: str, value: Any) -> None:

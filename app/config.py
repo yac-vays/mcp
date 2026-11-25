@@ -59,6 +59,15 @@ class Settings(BaseSettings):
 
     upstream_timeout: float = 30.0
 
+    # Maximum size (characters) of a YAML document the gateway parses, like
+    # YAC's `YAC_MAX_YAML_SIZE` (same default): the round-trip parser is slow
+    # and runs on the event loop.
+    max_yaml_size: int = 65536
+
+    # Maximum size (characters) of a log content document handed to the agent
+    # (the rest is cut off).
+    max_log_content: int = 100_000
+
     # ATTENTION: development only! Disables the OAuth server and forwards the
     # bearer token of each MCP request unverified to the YAC backends.
     dev_token_passthrough: bool = False

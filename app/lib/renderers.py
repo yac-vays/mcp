@@ -70,8 +70,9 @@ def describe(ui_schema: Any, json_schema: Any) -> list[dict]:
             notes.append(
                 {
                     "loc": control.loc,
-                    "note": "Suggested value (shown as placeholder in VAYS, not stored"
-                    " unless you set it): " + repr(control.options["initial"]),
+                    "note": "Suggested value (VAYS shows it as placeholder or"
+                    " preselection, it is only stored once the user picks it; set it"
+                    " yourself if it fits): " + repr(control.options["initial"]),
                 }
             )
     return notes

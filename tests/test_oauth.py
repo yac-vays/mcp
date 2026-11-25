@@ -7,6 +7,7 @@ backend must receive the user's id-token) and refresh.
 import base64
 import contextlib
 import hashlib
+import json
 import secrets
 import time
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +22,7 @@ from app.lib import envelope
 from app.lib import idp
 from app.lib import oauth
 from app.main import create_app
+from app.model.err import IdPError
 
 from tests.fake_yac import FakeYac
 
@@ -287,3 +289,29 @@ async def test_client_metadata_document(env):
             router.route(host="agent.test").mock(return_value=httpx.Response(200, json={
                 "client_id": "https://evil.test/x", "redirect_uris": ["https://evil.test/cb"]}))
             assert await oauth.StatelessProvider().get_client(url) is None
+
+
+async def test_id_token_algorithms_are_pinned():
+    """Like YAC: only asymmetric algorithms, whatever the provider advertises."""
+    idp._cache.clear()  # pylint: disable=protected-access
+    fake_idp = FakeIdP()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        response = fake_idp.handle(request)
+        if request.url.path == "/.well-known/openid-configuration":
+            meta = {**response.json(), "id_token_signing_alg_values_supported": ["none", "HS256"]}
+            return httpx.Response(200, json=meta)
+        return response
+
+    with respx.mock(assert_all_called=False) as router:
+        router.route(host="idp.test").mock(side_effect=handle)
+        with pytest.raises(IdPError, match="no accepted id-token signature algorithm"):
+            await idp.validate_id_token(fake_idp.id_token())
+        def b64(data: dict) -> str:
+            return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+        claims = {"iss": IDP, "aud": "yac-mcp", "sub": "x", "exp": int(time.time()) + 60}
+        unsigned = f"{b64({'alg': 'none'})}.{b64(claims)}."
+        with pytest.raises(IdPError):
+            await idp.validate_id_token(unsigned)
+    idp._cache.clear()  # pylint: disable=protected-access

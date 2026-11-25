@@ -43,6 +43,9 @@ class FakeYac:
         self.requests: list[httpx.Request] = []
         self.commits: list[dict] = []
         self.schemas = copy.deepcopy(SCHEMAS)
+        self.log_content = "---\nos: linux\n"
+        # Set to report a failed after-action of the next write (YAC-Warning)
+        self.after_action_warning = ""
 
     def _validated(self, data: dict, text: str) -> dict:
         errors = sorted(
@@ -85,6 +88,15 @@ class FakeYac:
             if m[1] not in self.files:
                 return httpx.Response(404, json={"title": "Not Found", "message": "no such entity"})
             return httpx.Response(200, text=self.files[m[1]])
+        if m := re.fullmatch(r"/entity/host/([^/]+)/logs", path):
+            entry = {"name": "facts", "message": "gathered", "time": "2026-11-25",
+                     "progress": None, "problem": None, "has_content": True}
+            return httpx.Response(200, json=[entry])
+        if m := re.fullmatch(r"/entity/host/([^/]+)/logs/([^/]+)/content", path):
+            if m[2] != "facts":
+                return httpx.Response(404, json={"title": "Not Found", "message": "no such log"})
+            body = {"name": "facts", "time": "2026-11-25", "content": self.log_content}
+            return httpx.Response(200, json=body)
         if path == "/entity/host" and method == "GET":
             return httpx.Response(
                 200, json={"hash": "h", "list": [{"name": n, "perms": PERMS} for n in self.files]}
@@ -99,9 +111,20 @@ class FakeYac:
                 body = json.loads(request.content)
                 if self.files.get(m[1]) != body["yaml_old"]:
                     return httpx.Response(409, json={"title": "Conflict", "message": "changed"})
+                if body["yaml_new"] == body["yaml_old"]:
+                    return httpx.Response(
+                        400,
+                        json={"title": "Invalid Request",
+                              "message": "The request does not change anything"},
+                    )
                 self.files[m[1]] = body["yaml_new"]
                 self.commits.append({"method": "edit", "msg": request.url.params["msg"], **body})
-                return httpx.Response(200, json={"name": m[1], "hash": "h", "patch": "~..."})
+                headers = {}
+                if self.after_action_warning:
+                    headers["YAC-Warning"] = self.after_action_warning
+                return httpx.Response(
+                    200, json={"name": m[1], "hash": "h", "patch": "~..."}, headers=headers
+                )
             if method == "DELETE":
                 self.files.pop(m[1])
                 return httpx.Response(204)

@@ -12,7 +12,17 @@
   "favorites": [],
   "options": [],
   "links": [],
-  "logs": [],
+  "logs": [
+   {
+    "name": "facts",
+    "title": "Facts",
+    "description": "Gathered facts",
+    "renderer": "document",
+    "options": {
+     "language": "yaml"
+    }
+   }
+  ],
   "actions": [
    {
     "name": "deploy",
