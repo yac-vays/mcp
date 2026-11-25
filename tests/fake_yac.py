@@ -46,6 +46,9 @@ class FakeYac:
         self.log_content = "---\nos: linux\n"
         # Set to report a failed after-action of the next write (YAC-Warning)
         self.after_action_warning = ""
+        # Limit usages, measured (like YAC) only for the operations a limit is on
+        self.usages: list[dict] = []
+        self.perms = list(PERMS)
 
     def _validated(self, data: dict, text: str) -> dict:
         errors = sorted(
@@ -56,7 +59,7 @@ class FakeYac:
         if errors:
             schemas["message"] = errors[0].message
             schemas["data_loc"] = "#/" + "/".join(str(p) for p in errors[0].absolute_path)
-        return {"schemas": schemas, "request": {"valid": True}, "usages": [], "perms": PERMS}
+        return {"schemas": schemas, "request": {"valid": True}, "usages": [], "perms": self.perms}
 
     def validate(self, body: dict) -> dict:
         entity = body.get("entity") or {}
@@ -71,6 +74,8 @@ class FakeYac:
             text = yamllib.dump(_merge(yamllib.load(base), entity["data"]))
         data = yamllib.plain(yamllib.load(text))
         result = self._validated(data, yamllib.dump(yamllib.load(text)))
+        if body["operation"] in ("create", "edit"):
+            result["usages"] = copy.deepcopy(self.usages)
         if body["operation"] == "create" and not entity.get("name"):  # name_generated: never
             result["request"] = {
                 "valid": False, "message": "The entity.name must be set for this operation"

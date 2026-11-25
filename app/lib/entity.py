@@ -118,7 +118,16 @@ def edit_token(client: Yac, type_name: str, name: str, yaml_text: str) -> str:
 
 async def read_entity(client: Yac, type_name: str, name: str) -> dict:
     yaml_text = await client.entity_yaml(type_name, name)
-    result = await client.validate({"operation": "read", "type": type_name, "name": name})
+    # Like VAYS' edit mode: the schema of an edit (with what the user may not
+    # change, `yac_perms` / `yac_editable`) and the usage of the limits, which
+    # YAC only measures for the operations they apply to (not for a read). A
+    # user who may not edit gets the display schema of a read.
+    result = await client.validate(
+        {"operation": "edit", "type": type_name, "name": name,
+         "entity": {"name": name, "yaml_old": yaml_text, "yaml_new": yaml_text}}
+    )
+    if "edt" not in result.get("perms", []):
+        result = await client.validate({"operation": "read", "type": type_name, "name": name})
     return {
         "yaml": yaml_text,
         "perms": result.get("perms", []),

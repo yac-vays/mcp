@@ -216,3 +216,17 @@ async def test_yaml_size_limit(fake, client, env):
     env(max_yaml_size=100)
     with pytest.raises(InputError, match="too big"):
         await entity.validate(client, "host", "create", "web09", "a: " + "x" * 200, None, None, None)
+
+
+async def test_read_entity_validates_as_edit(fake, client):
+    """Limit usages and the edit schema, like VAYS' edit mode (YAC measures no
+    limits for a read); a user without `edt` gets the read schema."""
+    fake.usages = [{"title": "Quota", "path": "#/quota", "usage": 3, "max": 5, "ok": True}]
+    result = await entity.read_entity(client, "host", "web01")
+    assert result["usages"] == fake.usages
+    body = json.loads(fake.requests[-1].content)
+    assert body["operation"] == "edit" and body["entity"]["yaml_new"] == STORED
+    fake.perms = ["see"]
+    result = await entity.read_entity(client, "host", "web01")
+    assert result["usages"] == [] and result["perms"] == ["see"]
+    assert json.loads(fake.requests[-1].content)["operation"] == "read"
