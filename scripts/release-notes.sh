@@ -117,10 +117,6 @@ publish() {
   local dir latest
   dir=$(mktemp -d); trap "rm -rf '$dir'" EXIT
   git clone --quiet --depth 1 "$docs" "$dir"
-  if [ ! -f "$dir/$repo/index.md" ]; then
-    echo "release notes: the docs have no $name section ($repo/index.md) yet, not published"
-    return 0
-  fi
   generate > "$dir/$page"
   latest=$(sed -n 's/^## \(v[^ ]*\).*/\1/p' "$dir/$page" | head -1)
   git -C "$dir" add "$page"
