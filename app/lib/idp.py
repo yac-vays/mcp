@@ -121,8 +121,20 @@ async def exchange_code(code: str, code_verifier: str) -> dict:
     )
 
 
-async def refresh(refresh_token: str) -> dict:
-    return await _token_request({"grant_type": "refresh_token", "refresh_token": refresh_token})
+def granted_scope(tokens: dict, requested: str) -> str:
+    """The scopes a token response granted: absent means as requested (RFC 6749 5.1)."""
+    return tokens.get("scope") or requested
+
+
+async def refresh(refresh_token: str, scope: str) -> dict:
+    """
+    `scope` is what the login granted. Optional in a refresh (RFC 6749 6:
+    omitted = as granted before), but some providers refuse a refresh without
+    it (access.ethz.ch: invalid_scope "Unknown request scope detected."); the
+    granted scopes are always valid, the configured ones might be more.
+    """
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    return await _token_request({**data, "scope": scope})
 
 
 async def validate_id_token(id_token: str, nonce: str | None = None) -> dict:

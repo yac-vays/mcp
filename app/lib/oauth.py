@@ -90,6 +90,9 @@ class GatewayAuthorizationCode(AuthorizationCode):
 class GatewayRefreshToken(RefreshToken):
     idp_refresh_token: str
     session_exp: int
+    # The scopes the IdP granted at the login, sent with each refresh (absent
+    # in refresh tokens issued before: the configured scopes)
+    idp_scope: str | None = None
     # For the logs (absent in refresh tokens issued before they were added)
     login_at: int | None = None
     refreshes: int = 0
@@ -292,13 +295,14 @@ class StatelessProvider:
             session_exp=now + consts.ENV.session_max_age,
             login_at=now,
             refreshes=0,
+            idp_scope=idp.granted_scope(tokens, consts.ENV.oidc_scope),
         )
 
     # Tokens
 
     def _issue(  # pylint: disable=too-many-arguments
         self, *, client_id, claims, id_token, idp_refresh_token, scopes, session_exp,
-        login_at, refreshes,
+        login_at, refreshes, idp_scope,
     ):
         exp = int(claims["exp"])
         access = envelope.seal(
@@ -318,6 +322,7 @@ class StatelessProvider:
                     "session_exp": session_exp,
                     "login_at": login_at,
                     "refreshes": refreshes,
+                    "idp_scope": idp_scope,
                 },
                 exp=session_exp,
             )
@@ -348,6 +353,7 @@ class StatelessProvider:
             session_exp=data["session_exp"],
             login_at=data.get("login_at"),
             refreshes=data.get("refreshes", 0),
+            idp_scope=data.get("idp_scope"),
         )
 
     async def exchange_refresh_token(  # pylint: disable=unused-argument
@@ -357,7 +363,8 @@ class StatelessProvider:
         scopes: list[str],
     ) -> OAuthToken:
         try:
-            tokens = await idp.refresh(refresh_token.idp_refresh_token)
+            idp_scope = refresh_token.idp_scope or consts.ENV.oidc_scope
+            tokens = await idp.refresh(refresh_token.idp_refresh_token, idp_scope)
             if "id_token" not in tokens:
                 raise IdPError(
                     "The identity provider returned no new id-token on refresh, please log in again"
@@ -378,6 +385,7 @@ class StatelessProvider:
             session_exp=refresh_token.session_exp,
             login_at=refresh_token.login_at,
             refreshes=refresh_token.refreshes + 1,
+            idp_scope=idp.granted_scope(tokens, idp_scope),
         )
 
     async def load_access_token(self, token: str) -> GatewayAccessToken | None:

@@ -69,6 +69,11 @@ class FakeIdP:
                 return httpx.Response(400, json={"error": "invalid_grant"})
             elif self.refresh_error:
                 return httpx.Response(400, json=self.refresh_error)
+            elif form.get("scope") != (self.granted_scope or "openid profile email groups offline_access"):
+                # like access.ethz.ch: a refresh without the login's scopes
+                # fails; like a strict provider: so does one asking for more
+                return httpx.Response(400, json={
+                    "error": "invalid_scope", "error_description": "Unknown request scope detected."})
             else:
                 nonce = None
                 self.refresh_tokens.discard(form["refresh_token"])  # rotation
