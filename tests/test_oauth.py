@@ -8,6 +8,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import logging
 import secrets
 import time
 from urllib.parse import parse_qs, urlparse
@@ -39,6 +40,8 @@ class FakeIdP:
         self.refresh_tokens: set[str] = set()
         self.refresh_returns_id_token = True
         self.token_requests: list[dict] = []
+        self.granted_scope: str | None = None  # reported in the token response
+        self.refresh_error: dict | None = None  # e.g. access.ethz.ch's invalid_scope
 
     def id_token(self, nonce=None, sub="alice-sub", aud="yac-mcp", exp_in=300):
         claims = {"iss": IDP, "aud": aud, "sub": sub, "exp": int(time.time()) + exp_in,
@@ -64,12 +67,16 @@ class FakeIdP:
                     return httpx.Response(400, json={"error": "invalid_grant"})
             elif form["refresh_token"] not in self.refresh_tokens:
                 return httpx.Response(400, json={"error": "invalid_grant"})
+            elif self.refresh_error:
+                return httpx.Response(400, json=self.refresh_error)
             else:
                 nonce = None
                 self.refresh_tokens.discard(form["refresh_token"])  # rotation
             refresh = secrets.token_urlsafe(16)
             self.refresh_tokens.add(refresh)
             body = {"access_token": "idp-at", "token_type": "Bearer", "refresh_token": refresh}
+            if self.granted_scope is not None:
+                body["scope"] = self.granted_scope
             if form["grant_type"] == "authorization_code" or self.refresh_returns_id_token:
                 body["id_token"] = self.id_token(nonce)
             return httpx.Response(200, json=body)
@@ -207,6 +214,39 @@ async def test_full_flow():
         r = await client.post("/token", data={
             "grant_type": "refresh_token", "refresh_token": refreshed["refresh_token"], "client_id": client_id})
         assert r.status_code == 400 and "id-token" in r.json()["error_description"]
+
+
+async def test_login_and_refresh_diagnostics(caplog):
+    """
+    access.ethz.ch drops requested scopes it does not allow for the client at
+    the login and refuses the refresh later: the logs say so, and which
+    refresh of which login failed.
+    """
+    caplog.set_level(logging.DEBUG)
+    async with running() as (client, fake_idp, _):
+        client_id = await _register(client)
+        fake_idp.granted_scope = "openid email"
+        code, verifier = await _login(client, fake_idp, client_id)
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
+            "client_id": client_id, "redirect_uri": REDIRECT})
+        tokens = r.json()
+        assert "scopes granted: openid email" in caplog.text
+        assert "did not grant the scopes groups offline_access profile" in caplog.text
+
+        r = await client.post("/token", data={
+            "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": client_id})
+        assert r.status_code == 200
+        assert "Refresh #1 (0m after the login) done" in caplog.text
+
+        fake_idp.refresh_error = {
+            "error": "invalid_scope", "error_description": "Unknown request scope detected."}
+        r = await client.post("/token", data={
+            "grant_type": "refresh_token", "refresh_token": r.json()["refresh_token"], "client_id": client_id})
+        assert r.status_code == 400
+        assert ("Token request (refresh_token) rejected by the identity provider:"
+                " 400 invalid_scope Unknown request scope detected.") in caplog.text
+        assert "Refresh #2 (0m after the login) failed" in caplog.text
 
 
 async def test_remembered_consent_and_tool_errors():

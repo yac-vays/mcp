@@ -90,6 +90,9 @@ class GatewayAuthorizationCode(AuthorizationCode):
 class GatewayRefreshToken(RefreshToken):
     idp_refresh_token: str
     session_exp: int
+    # For the logs (absent in refresh tokens issued before they were added)
+    login_at: int | None = None
+    refreshes: int = 0
 
 
 class GatewayAccessToken(AccessToken):
@@ -142,6 +145,47 @@ async def _client_from_metadata_document(url: str) -> GatewayClient | None:
         return None
     _cimd_cache[url] = (time.time() + CIMD_CACHE_TTL, client)
     return client
+
+
+def _duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def _log_login(tokens: dict, claims: dict) -> None:
+    """
+    Log what the IdP granted at a login. A provider may silently drop
+    requested scopes it does not allow for the client at the login and refuse
+    the refresh later (access.ethz.ch: invalid_scope "Unknown request scope
+    detected."), so missing scopes are a warning.
+    """
+    lifetime = _duration(int(claims["exp"]) - time.time())
+    granted = tokens.get("scope")
+    refresh = "with" if tokens.get("refresh_token") else "WITHOUT"
+    logger.info(
+        f"Login: id-token valid for {lifetime}, {refresh} refresh token,"
+        f" scopes granted: {granted if granted is not None else '(not reported)'}"
+    )
+    if not tokens.get("refresh_token"):
+        logger.warning(
+            "The identity provider issued no refresh token: logins end when the"
+            f" id-token expires (after {lifetime})"
+        )
+    if granted is not None:
+        missing = set(consts.ENV.oidc_scope.split()) - set(granted.split())
+        if missing:
+            logger.warning(
+                f"The identity provider did not grant the scopes {' '.join(sorted(missing))}"
+                f" (requested: {consts.ENV.oidc_scope}): allow them for the client"
+                f" {consts.ENV.oidc_client_id}, or refreshing logins may fail"
+            )
+
+
+def _refresh_info(token: GatewayRefreshToken) -> str:
+    since = "login time unknown"
+    if token.login_at:
+        since = f"{_duration(time.time() - token.login_at)} after the login"
+    return f"#{token.refreshes + 1} ({since})"
 
 
 def _redirect(base: str, **params: str | None) -> str:
@@ -237,18 +281,25 @@ class StatelessProvider:
             claims = await idp.validate_id_token(tokens["id_token"], authorization_code.nonce)
         except IdPError as error:
             raise TokenError("invalid_grant", str(error)) from error
+        _log_login(tokens, claims)
+        now = int(time.time())
         return self._issue(
             client_id=authorization_code.client_id,
             claims=claims,
             id_token=tokens["id_token"],
             idp_refresh_token=tokens.get("refresh_token"),
             scopes=authorization_code.scopes,
-            session_exp=int(time.time()) + consts.ENV.session_max_age,
+            session_exp=now + consts.ENV.session_max_age,
+            login_at=now,
+            refreshes=0,
         )
 
     # Tokens
 
-    def _issue(self, *, client_id, claims, id_token, idp_refresh_token, scopes, session_exp):
+    def _issue(  # pylint: disable=too-many-arguments
+        self, *, client_id, claims, id_token, idp_refresh_token, scopes, session_exp,
+        login_at, refreshes,
+    ):
         exp = int(claims["exp"])
         access = envelope.seal(
             "access",
@@ -265,6 +316,8 @@ class StatelessProvider:
                     "rt": idp_refresh_token,
                     "scopes": scopes,
                     "session_exp": session_exp,
+                    "login_at": login_at,
+                    "refreshes": refreshes,
                 },
                 exp=session_exp,
             )
@@ -293,6 +346,8 @@ class StatelessProvider:
             subject=data["sub"],
             idp_refresh_token=data["rt"],
             session_exp=data["session_exp"],
+            login_at=data.get("login_at"),
+            refreshes=data.get("refreshes", 0),
         )
 
     async def exchange_refresh_token(  # pylint: disable=unused-argument
@@ -309,7 +364,9 @@ class StatelessProvider:
                 )
             claims = await idp.validate_id_token(tokens["id_token"])
         except IdPError as error:
+            logger.warning(f"Refresh {_refresh_info(refresh_token)} failed: {error}")
             raise TokenError("invalid_grant", str(error)) from error
+        logger.debug(f"Refresh {_refresh_info(refresh_token)} done")
         if claims["sub"] != refresh_token.subject:
             raise TokenError("invalid_grant", "The refreshed login belongs to another user")
         return self._issue(
@@ -319,6 +376,8 @@ class StatelessProvider:
             idp_refresh_token=tokens.get("refresh_token") or refresh_token.idp_refresh_token,
             scopes=scopes or refresh_token.scopes,
             session_exp=refresh_token.session_exp,
+            login_at=refresh_token.login_at,
+            refreshes=refresh_token.refreshes + 1,
         )
 
     async def load_access_token(self, token: str) -> GatewayAccessToken | None:

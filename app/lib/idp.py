@@ -101,7 +101,11 @@ async def _token_request(data: dict) -> dict:
         body = {}
     if response.status_code >= 400 or "access_token" not in body:
         error = body.get("error_description") or body.get("error") or response.text[:200]
-        logger.info(f"Token request rejected by the identity provider: {error}")
+        code = f" {body['error']}" if body.get("error") and body["error"] != error else ""
+        logger.info(
+            f"Token request ({data['grant_type']}) rejected by the identity provider:"
+            f" {response.status_code}{code} {error}"
+        )
         raise IdPError(f"The identity provider rejected the request: {error}")
     return body
 
