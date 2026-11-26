@@ -13,7 +13,7 @@ from app.lib import backends
 from app.lib import entity
 from app.lib import yaml as yamllib
 from app.lib.yac import Yac
-from app.model.err import InputError, ReadOnlyError, UpstreamError
+from app.model.err import InputError, NotAllowedError, UpstreamError
 
 from tests.fake_yac import FakeYac
 
@@ -142,9 +142,24 @@ async def test_guards(fake, client, env):
         await entity.create(client, "host", "bad name", "", None, "", [])
     with pytest.raises(InputError, match="either"):
         await entity.edit(client, "host", "web01", None, None, None, None, "", [])
-    env(read_only=True)
-    with pytest.raises(ReadOnlyError):
+    env(allow=["create", "edit"])
+    with pytest.raises(NotAllowedError, match="does not delete"):
         await entity.delete(client, "host", "web01", "", [])
+    with pytest.raises(NotAllowedError, match="does not run actions"):
+        await entity.run_action(client, "host", "web01", "deploy")
+    # actions requested with a write are refused too, before anything is sent
+    with pytest.raises(NotAllowedError, match="does not run actions"):
+        await entity.edit(client, "host", "web01", STORED, None, None, None, "", ["deploy"])
+    env(allow=["actions"])
+    with pytest.raises(NotAllowedError, match="does not edit"):
+        await entity.edit(client, "host", "web01", STORED, None, None, None, "", [])
+    env(allow=[])
+    with pytest.raises(NotAllowedError, match="read-only"):
+        await entity.delete(client, "host", "web01", "", [])
+    with pytest.raises(NotAllowedError, match="read-only"):
+        await entity.create(client, "host", "web03", STORED, None, "", [])
+    assert fake.files == {"web01": STORED} and not fake.commits
+    assert not [r for r in fake.requests if r.method != "GET"]
 
 
 async def test_upstream_errors(fake, client):

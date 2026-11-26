@@ -100,18 +100,19 @@ def create_app() -> Starlette:
         logger.warning(
             "DEV MODE: bearer tokens are forwarded unverified to the backends, no OAuth server!"
         )
-        mcp = MCPServer("yac", instructions=tools.INSTRUCTIONS)
+        mcp = MCPServer("yac", instructions=tools.instructions())
         auth_routes: list[Route] = []
     else:
         envelope.seal("check", {})  # fail early without keys
         mcp = MCPServer(
             "yac",
-            instructions=tools.INSTRUCTIONS,
+            instructions=tools.instructions(),
             token_verifier=ProviderTokenVerifier(provider),  # type: ignore[arg-type]
             auth=_auth_settings(),
         )
         auth_routes = [*_auth_routes(provider), *login.routes(provider)]
     tools.register(mcp)
+    logger.info(f"Allowed changes: {consts.ENV.allow or 'none (read-only)'}")
 
     mcp_app = mcp.streamable_http_app(
         streamable_http_path=consts.MCP_PATH,

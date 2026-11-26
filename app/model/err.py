@@ -21,7 +21,7 @@ class InputError(MCPGatewayError):
     pass
 
 
-class ReadOnlyError(MCPGatewayError):
+class NotAllowedError(MCPGatewayError):
     pass
 
 

@@ -14,8 +14,19 @@ args: ["--forwarded-allow-ips", "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.
 # (http://localhost:8080 without an ingress, for port-forward testing).
 publicUrl: ""
 
-# Disables all write tools (create, edit, delete, run_action).
-readOnly: true
+# The changes agents may make, in addition to reading (list, read, validate,
+# logs). Empty = read-only. Any of:
+#   create   create entities
+#   edit     edit (and rename) entities
+#   delete   delete entities
+#   actions  run actions (the run_action tool and actions requested with a
+#            create/edit/delete); actions the YAC specs force on a write
+#            run anyway, YAC decides that
+# e.g. [create, edit] = read-write without delete and actions.
+# The admin override (`force`) is never offered. The users' permissions in
+# the YAC specs still apply on top (restrict agents there with the
+# `YAC-Client: mcp` request header).
+allow: []
 
 # The OIDC provider (the same one VAYS and YAC use) and the gateway's
 # confidential client there. Register the redirect URI `{publicUrl}/callback`

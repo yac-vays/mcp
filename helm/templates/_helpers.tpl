@@ -52,3 +52,22 @@ endpoint.
 http://localhost:8080
 {{- end -}}
 {{- end }}
+
+{{/*
+The allowed changes as JSON list, checked at render time (`readOnly` was
+replaced by `allow`).
+*/}}
+{{- define "allow" -}}
+{{- if hasKey .Values "readOnly" -}}
+{{- fail "readOnly was replaced by allow: a list of create, edit, delete, actions ([] = read-only)" -}}
+{{- end -}}
+{{- if not (kindIs "slice" .Values.allow) -}}
+{{- fail "allow must be a list of create, edit, delete, actions" -}}
+{{- end -}}
+{{- range .Values.allow -}}
+{{- if not (has . (list "create" "edit" "delete" "actions")) -}}
+{{- fail (printf "allow: unknown operation %q (create, edit, delete, actions)" (toString .)) -}}
+{{- end -}}
+{{- end -}}
+{{- .Values.allow | uniq | toJson -}}
+{{- end -}}

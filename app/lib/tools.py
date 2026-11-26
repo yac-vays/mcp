@@ -85,6 +85,25 @@ empty or write "~generate"), passwords go into the `secrets` argument.
 Never invent secrets or random values yourself.
 """
 
+# The tool of each allowed operation (`YAC_MCP_ALLOW`). Reading is always
+# offered; the admin override `force` never (no tool has it).
+WRITE_TOOLS = {"create": "create", "edit": "edit", "delete": "delete", "actions": "run_action"}
+
+
+def instructions() -> str:
+    """The server instructions, with a note on what the server does not allow."""
+    allow = consts.ENV.allow
+    if not allow:
+        note = "This server is read-only: changes are made in VAYS."
+    elif missing := [op for op in WRITE_TOOLS if op not in allow]:
+        what = ", ".join("run actions" if op == "actions" else op for op in missing)
+        note = f"This server does not offer: {what}. That is done in VAYS."
+        if "actions" in missing:
+            note += " Do not pass `run` to the writes."
+    else:
+        return INSTRUCTIONS
+    return f"{INSTRUCTIONS}\n{note}\n"
+
 
 def _client(ctx: Context, backend: str) -> Yac:
     return Yac(backends.get(backend), auth.upstream_token(ctx))
@@ -264,6 +283,6 @@ def register(mcp: MCPServer) -> None:  # pylint: disable=too-many-locals
         """
         return await _call(ctx, backend, entity.read_logs, type, name, log)
 
-    if consts.ENV.read_only:
-        for tool in ("create", "edit", "delete", "run_action"):
+    for operation, tool in WRITE_TOOLS.items():
+        if operation not in consts.ENV.allow:
             mcp.remove_tool(tool)

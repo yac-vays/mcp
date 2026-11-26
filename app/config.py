@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     # after `session_max_age`). Dropping all keys logs everybody out.
     keys: list[str] = []
 
-    # Disables all write tools (create, edit, delete, run_action).
-    read_only: bool = True
+    # The changes agents may make, in addition to reading (list, read,
+    # validate, logs): any of "create", "edit", "delete" and "actions" (the
+    # run_action tool and the `run` argument of the writes). Empty = read-only.
+    # Actions the YAC specs force on a write run anyway (YAC decides). The
+    # admin override (`force` on writes) is never offered.
+    allow: list[Literal["create", "edit", "delete", "actions"]] = []
 
     # Return generated secrets (e.g. `age_secret` cleartexts) to the agent.
     # Anything returned ends up in the agent's transcript at the LLM provider.

@@ -79,8 +79,8 @@ spec:
               value: /config/config.json
             - name: YAC_MCP_FORMAT_PLUGIN
               value: "json_lines"
-            - name: YAC_MCP_READ_ONLY
-              value: {{ .Values.readOnly | toString | quote }}
+            - name: YAC_MCP_ALLOW
+              value: {{ include "allow" . | quote }}
             - name: YAC_MCP_OIDC_URL
               value: {{ .Values.oidc.url | quote }}
             - name: YAC_MCP_OIDC_CLIENT_ID

@@ -7,7 +7,7 @@ are filled in, the renderer plugins generate/hash/encrypt their fields, and
 this repeats until nothing changes (the schemas can depend on the data).
 Only then is the canonical YAML returned by YAC committed.
 
-Raises: [app.model.err.InputError, app.model.err.ReadOnlyError,
+Raises: [app.model.err.InputError, app.model.err.NotAllowedError,
          app.model.err.UpstreamError, app.model.err.EnvelopeError]
 """
 
@@ -24,7 +24,7 @@ from app.lib import renderers
 from app.lib import schema
 from app.lib import yaml as yamllib
 from app.lib.yac import Yac
-from app.model.err import InputError, ReadOnlyError, UpstreamError
+from app.model.err import InputError, NotAllowedError, UpstreamError
 
 MAX_ROUNDS = 4
 EDIT_TOKEN_TTL = 7 * 86400
@@ -45,9 +45,24 @@ def check_name(name: str, what: str = "name") -> None:
         raise InputError(f'The {what} "{name}" must match {consts.NAME_PATTERN}')
 
 
-def check_writable() -> None:
-    if consts.ENV.read_only:
-        raise ReadOnlyError("This MCP server is read-only: changes must be made in VAYS")
+_REFUSALS = {
+    "create": "create entities",
+    "edit": "edit entities",
+    "delete": "delete entities",
+    "actions": "run actions",
+}
+
+
+def check_allowed(operation: str, run: list[str] | None = None) -> None:
+    """Refuse an operation (or actions requested with it) the server does not allow."""
+    allow = consts.ENV.allow
+    if not allow:
+        raise NotAllowedError("This MCP server is read-only: changes must be made in VAYS")
+    for what in (operation, *(["actions"] if run else [])):
+        if what not in allow:
+            raise NotAllowedError(
+                f"This MCP server does not {_REFUSALS[what]}: that must be done in VAYS"
+            )
 
 
 def commit_message(message: str) -> str:
@@ -353,7 +368,7 @@ async def create(
     message: str,
     run: list[str],
 ) -> dict:
-    check_writable()
+    check_allowed("create", run)
     if name is not None:
         check_name(name)
     msg = commit_message(message)
@@ -399,7 +414,7 @@ async def edit(  # pylint: disable=too-many-locals
     message: str,
     run: list[str],
 ) -> dict:
-    check_writable()
+    check_allowed("edit", run)
     check_name(name)
     if (yaml_text is None) == (data is None):
         raise InputError("Pass either `yaml` (the whole document) or `data` (a patch)")
@@ -448,7 +463,7 @@ async def edit(  # pylint: disable=too-many-locals
 
 
 async def delete(client: Yac, type_name: str, name: str, message: str, run: list[str]) -> dict:
-    check_writable()
+    check_allowed("delete", run)
     check_name(name)
     try:
         await client.delete(type_name, name, commit_message(message), run)
@@ -462,7 +477,7 @@ async def delete(client: Yac, type_name: str, name: str, message: str, run: list
 
 
 async def run_action(client: Yac, type_name: str, name: str, action: str) -> dict:
-    check_writable()
+    check_allowed("actions")
     check_name(name)
     check_name(action, "action")
     try:
